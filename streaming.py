@@ -27,7 +27,7 @@ class Player(object):
 
         # set up URI
         self.playbin.set_property("uri", "rtsp://192.168.101.9:8554/stream")
-        self.playbin.set_property("av-offset", -100000000)
+        self.playbin.set_property("av-offset", -1000000000)
 
         # Pipeline = gst-launch-1.0 rtspsrc location=rtsp://192.168.101.9:8554/stream latency=0 name=src src. ! rtph264depay ! h264parse ! avdec_h264 ! videoconvert ! autovideosink
 
@@ -222,43 +222,28 @@ class Player(object):
             # retrieve the stream's video tags
             tags = self.playbin.emit("get-video-tags", i)
             if tags:
-                buffer.insert_at_cursor("video stream {0}\n".format(i))
-                _, str = tags.get_string(Gst.TAG_VIDEO_CODEC)
-                buffer.insert_at_cursor("  codec: {0}\n".format(str or "unknown"))
-                _, str = tags.get_uint64(Gst.TAG_DURATION)
-                buffer.insert_at_cursor("  duration: {0}\n".format(str or "unknown"))
-
+                buffer.insert_at_cursor("Video stream{0}\n".format(i))
+                buffer.insert_at_cursor("\nParameters: {0}\n".format(tags.to_string()))
         for i in range(nr_audio):
             tags = None
             # retrieve the stream's audio tags
             tags = self.playbin.emit("get-audio-tags", i)
             if tags:
-                buffer.insert_at_cursor("\naudio stream {0}\n".format(i))
-                ret, str = tags.get_string(Gst.TAG_AUDIO_CODEC)
-                if ret:
-                    buffer.insert_at_cursor("  codec: {0}\n".format(str or "unknown"))
+                buffer.insert_at_cursor("\nAudio stream{0}\n".format(i))
+                buffer.insert_at_cursor("\nParameters: {0}\n".format(tags.to_string()))
+                # for f in range(tags.n_tags()):
+                #     str = tags.nth_tag_name(f)
+                #     buffer.insert_at_cursor("{0}: ".format(str))
 
-                ret, str = tags.get_string(Gst.TAG_LANGUAGE_CODE)
-                if ret:
-                    buffer.insert_at_cursor(
-                        "  language: {0}\n".format(str or "unknown")
-                    )
-
-                ret, str = tags.get_uint(Gst.TAG_BITRATE)
-                if ret:
-                    buffer.insert_at_cursor("  bitrate: {0}\n".format(str or "unknown"))
-
+                #     value = tags.get_value_index (tags.nth_tag_name(f),f)
+                #     buffer.insert_at_cursor("{0}\n".format(value or "unknown"))
         for i in range(nr_text):
             tags = None
             # retrieve the stream's subtitle tags
             tags = self.playbin.emit("get-text-tags", i)
             if tags:
-                buffer.insert_at_cursor("\nsubtitle stream {0}\n".format(i))
-                ret, str = tags.get_string(Gst.TAG_LANGUAGE_CODE)
-                if ret:
-                    buffer.insert_at_cursor(
-                        "  language: {0}\n".format(str or "unknown")
-                    )
+                buffer.insert_at_cursor("\nSubtitle stream{0}\n".format(i))
+                buffer.insert_at_cursor("\nParameters: {0}\n".format(tags.to_string()))
 
     # this function is called when an "application" message is posted on the bus
     # here we retrieve the message posted by the on_tags_changed callback
