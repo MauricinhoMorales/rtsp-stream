@@ -1,148 +1,124 @@
 import sys
 import gi
+import os
 
 gi.require_version("Gst", "1.0")
 gi.require_version("Gtk", "3.0")
 gi.require_version("GdkX11", "3.0")
 gi.require_version("GstVideo", "1.0")
+
 from gi.repository import Gst, Gtk, GLib, GdkX11, GstVideo
-
-# http://docs.gstreamer.com/display/GstSDK/Basic+tutorial+5%3A+GUI+toolkit+integration
-
+from dotenv import load_dotenv
 
 class Player(object):
     def __init__(self):
-        # initialize GTK
+        # Initialize GTK
         Gtk.init(sys.argv)
 
-        # initialize GStreamer
+        # Initialize GStreamer
         Gst.init(sys.argv)
 
         self.state = Gst.State.NULL
         self.duration = Gst.CLOCK_TIME_NONE
-        self.playbin = Gst.ElementFactory.make("playbin", "playbin")
-        if not self.playbin:
-            print("ERROR: Could not create playbin.")
+        self.pipeline = Gst.ElementFactory.make("playbin", "pipeline")
+        if not self.pipeline:
+            print("ERROR: Could not create pipeline.")
             sys.exit(1)
 
-        # set up URI
-        self.playbin.set_property("uri", "rtsp://192.168.101.9:8554/stream")
-        self.playbin.set_property("av-offset", -1000000000)
+        # Set up parameters of pipeline
+        load_dotenv()
+        self.pipeline.set_property("uri", os.getenv("RTSP_URI"))
+        self.pipeline.set_property("av-offset", -1000000000)
 
-        # Pipeline = gst-launch-1.0 rtspsrc location=rtsp://192.168.101.9:8554/stream latency=0 name=src src. ! rtph264depay ! h264parse ! avdec_h264 ! videoconvert ! autovideosink
+        # Command to execute the Pipeline in GST-LAUNCH
+        # gst-launch-1.0 rtspsrc location=rtsp://192.168.101.9:8554/stream latency=0 name=src src. ! 
+        # rtph264depay ! h264parse ! avdec_h264 ! queue ! autovideosink src. ! 
+        # rtpmpadepay ! mpegaudioparse !  mpg123audiodec ! audioconvert ! audioresample ! queue ! autoaudiosink
+        
+        # Connect to tag changes signals
+        self.pipeline.connect("video-tags-changed", self.on_tags_changed)
+        self.pipeline.connect("audio-tags-changed", self.on_tags_changed)
 
-        # connect to interesting signals in playbin
-        self.playbin.connect("video-tags-changed", self.on_tags_changed)
-        self.playbin.connect("audio-tags-changed", self.on_tags_changed)
-        self.playbin.connect("text-tags-changed", self.on_tags_changed)
-
-        # create the GUI
-        self.build_ui()
-
-        # instruct the bus to emit signals for each received message
-        # and connect to the interesting signals
-        bus = self.playbin.get_bus()
+        # Connect to error signals
+        bus = self.pipeline.get_bus()
         bus.add_signal_watch()
         bus.connect("message::error", self.on_error)
         bus.connect("message::eos", self.on_eos)
         bus.connect("message::state-changed", self.on_state_changed)
         bus.connect("message::application", self.on_application_message)
+        
+        # Create the GUI
+        self.build_ui()
 
-    # set the playbin to PLAYING (start playback), register refresh callback
-    # and start the GTK main loop
+    # Function to set the pipeline to PLAYING and refresh UI
     def start(self):
-        # start playing
-        ret = self.playbin.set_state(Gst.State.PLAYING)
+        # Start playing
+        ret = self.pipeline.set_state(Gst.State.PLAYING)
         if ret == Gst.StateChangeReturn.FAILURE:
             print("ERROR: Unable to set the pipeline to the playing state")
             sys.exit(1)
 
-        # register a function that GLib will call every second
+        # Register a function that GLib will call every second
         GLib.timeout_add_seconds(1, self.refresh_ui)
 
-        # start the GTK main loop. we will not regain control until
-        # Gtk.main_quit() is called
+        # Start the GTK main loop
         Gtk.main()
 
-        # free resources
+        # Free resources
         self.cleanup()
 
-    # set the playbin state to NULL and remove the reference to it
+    # Function to set the pipeline state to NULL and remove it
     def cleanup(self):
-        if self.playbin:
-            self.playbin.set_state(Gst.State.NULL)
-            self.playbin = None
+        if self.pipeline:
+            self.pipeline.set_state(Gst.State.NULL)
+            self.pipeline = None
 
+    # Function to create a basic GUI
     def build_ui(self):
         main_window = Gtk.Window.new(Gtk.WindowType.TOPLEVEL)
         main_window.connect("delete-event", self.on_delete_event)
 
+        # Create the window to show the video
         video_window = Gtk.DrawingArea.new()
         video_window.connect("realize", self.on_realize)
         video_window.connect("draw", self.on_draw)
 
+        # Create the buttons
         play_button = Gtk.Button.new_with_label("PLAY")
         play_button.connect("clicked", self.on_play)
-
         pause_button = Gtk.Button.new_with_label("PAUSE")
         pause_button.connect("clicked", self.on_pause)
 
+        # Create the text where the data will be show
         self.streams_list = Gtk.TextView.new()
         self.streams_list.set_editable(False)
 
+        # Linked all the items of the GUI
         controls = Gtk.Box.new(Gtk.Orientation.HORIZONTAL, 0)
         controls.pack_start(play_button, True, False, 2)
         controls.pack_start(pause_button, True, False, 2)
 
-        main_hbox = Gtk.Box.new(Gtk.Orientation.HORIZONTAL, 0)
-        main_hbox.pack_start(video_window, True, True, 0)
+        main_vbox = Gtk.Box.new(Gtk.Orientation.VERTICAL, 0)
+        main_vbox.pack_start(self.streams_list, False, False, 2)
+        main_vbox.pack_start(controls, False, False, 0)
+            
+        main_box = Gtk.Box.new(Gtk.Orientation.HORIZONTAL, 0)
+        main_box.pack_start(video_window, True, True, 0)
+        main_box.pack_start(main_vbox, False, False, 0)
 
-        main_box = Gtk.Box.new(Gtk.Orientation.VERTICAL, 0)
-        main_box.pack_start(main_hbox, True, True, 0)
-        main_box.pack_start(self.streams_list, False, False, 2)
-        main_box.pack_start(controls, False, True, 0)
-
+        # Added the linked items into the window
         main_window.add(main_box)
         main_window.set_default_size(640, 480)
         main_window.show_all()
 
-    # this function is called when the GUI toolkit creates the physical window
-    # that will hold the video
-    # at this point we can retrieve its handler and pass it to GStreamer
-    # through the XOverlay interface
+    # Function to recieve the video into the window previously created
     def on_realize(self, widget):
         window = widget.get_window()
         window_handle = window.get_xid()
 
-        # pass it to playbin, which implements XOverlay and will forward
-        # it to the video sink
-        self.playbin.set_window_handle(window_handle)
-        # self.playbin.set_xwindow_id(window_handle)
+        self.pipeline.set_window_handle(window_handle)
 
-    # this function is called when the PLAY button is clicked
-    def on_play(self, button):
-        self.playbin.set_state(Gst.State.PLAYING)
-        pass
-
-    # this function is called when the PAUSE button is clicked
-    def on_pause(self, button):
-        self.playbin.set_state(Gst.State.PAUSED)
-        pass
-
-    # this function is called when the STOP button is clicked
-    def on_stop(self, button):
-        self.playbin.set_state(Gst.State.READY)
-        pass
-
-    # this function is called when the main window is closed
-    def on_delete_event(self, widget, event):
-        self.on_stop(None)
-        Gtk.main_quit()
-
-    # this function is called every time the video window needs to be
-    # redrawn. GStreamer takes care of this in the PAUSED and PLAYING states.
-    # in the other states we simply draw a black rectangle to avoid
-    # any garbage showing up
+    # Function called to draw when not in PAUSED or PLAYING state
     def on_draw(self, widget, cr):
         if self.state < Gst.State.PAUSED:
             allocation = widget.get_allocation()
@@ -152,45 +128,53 @@ class Player(object):
             cr.fill()
 
         return False
+    
+    # Function called when the PLAY button is clicked
+    def on_play(self, button):
+        self.pipeline.set_state(Gst.State.PLAYING)
+        pass
 
-    # this function is called periodically to refresh the GUI
+    # Function called when the PAUSE button is clicked
+    def on_pause(self, button):
+        self.pipeline.set_state(Gst.State.PAUSED)
+        pass
+
+    # Function called when the main window is closed
+    def on_delete_event(self, widget, event):
+        Gtk.main_quit()
+
+    # Function called periodically to refresh the GUI
     def refresh_ui(self):
         current = -1
-
-        # we do not want to update anything unless we are in the PAUSED
-        # or PLAYING states
+        
         if self.state < Gst.State.PAUSED:
             return True
 
-    # this function is called when new metadata is discovered in the stream
-    def on_tags_changed(self, playbin, stream):
-        # we are possibly in a GStreamer working thread, so we notify
-        # the main thread of this event through a message in the bus
-        self.playbin.post_message(
+    # Function called if new metadata is discovered in the stream
+    def on_tags_changed(self, pipeline, stream):
+        self.pipeline.post_message(
             Gst.Message.new_application(
-                self.playbin, Gst.Structure.new_empty("tags-changed")
+                self.pipeline, Gst.Structure.new_empty("tags-changed")
             )
         )
 
-    # this function is called when an error message is posted on the bus
+    # Function called when an error message is posted on the bus
     def on_error(self, bus, msg):
         err, dbg = msg.parse_error()
         print("ERROR:", msg.src.get_name(), ":", err.message)
         if dbg:
             print("Debug info:", dbg)
 
-    # this function is called when an End-Of-Stream message is posted on the bus
-    # we just set the pipeline to READY (which stops playback)
+    # Function is called when an End-Of-Stream message is posted on the bus
     def on_eos(self, bus, msg):
         print("End-Of-Stream reached")
-        self.playbin.set_state(Gst.State.READY)
+        self.pipeline.set_state(Gst.State.READY)
 
-    # this function is called when the pipeline changes states.
-    # we use it to keep track of the current state
+    # Function called when the pipeline changes states.
     def on_state_changed(self, bus, msg):
         old, new, pending = msg.parse_state_changed()
-        if not msg.src == self.playbin:
-            # not from the playbin, ignore
+        if not msg.src == self.pipeline:
+            # not from the pipeline, ignore
             return
 
         self.state = new
@@ -201,56 +185,53 @@ class Player(object):
         )
 
         if old == Gst.State.READY and new == Gst.State.PAUSED:
-            # for extra responsiveness we refresh the GUI as soons as
-            # we reach the PAUSED state
             self.refresh_ui()
 
-    # extract metadata from all the streams and write it to the text widget
-    # in the GUI
+    # Function to extract metadata from all the streams and write it to the text widget
     def analyze_streams(self):
         # clear current contents of the widget
         buffer = self.streams_list.get_buffer()
         buffer.set_text("")
 
         # read some properties
-        nr_video = self.playbin.get_property("n-video")
-        nr_audio = self.playbin.get_property("n-audio")
-        nr_text = self.playbin.get_property("n-text")
+        nr_video = self.pipeline.get_property("n-video")
+        nr_audio = self.pipeline.get_property("n-audio")
 
         for i in range(nr_video):
             tags = None
-            # retrieve the stream's video tags
-            tags = self.playbin.emit("get-video-tags", i)
+            # Get the stream video tags
+            tags = self.pipeline.emit("get-video-tags", i)
             if tags:
                 buffer.insert_at_cursor("Video stream{0}\n".format(i))
-                buffer.insert_at_cursor("\nParameters: {0}\n".format(tags.to_string()))
+                # buffer.insert_at_cursor("\nParameters: {0}\n".format(tags.to_string()))
+                self.set_parameter(buffer, tags.get_string,Gst.TAG_VIDEO_CODEC)
+                self.set_parameter(buffer, tags.get_uint,Gst.TAG_MINIMUM_BITRATE)
+                self.set_parameter(buffer, tags.get_uint,Gst.TAG_MAXIMUM_BITRATE )
+                self.set_parameter(buffer, tags.get_uint,Gst.TAG_BITRATE)
+                
         for i in range(nr_audio):
             tags = None
-            # retrieve the stream's audio tags
-            tags = self.playbin.emit("get-audio-tags", i)
+            # Get the stream audio tags
+            tags = self.pipeline.emit("get-audio-tags", i)
             if tags:
                 buffer.insert_at_cursor("\nAudio stream{0}\n".format(i))
-                buffer.insert_at_cursor("\nParameters: {0}\n".format(tags.to_string()))
-                # for f in range(tags.n_tags()):
-                #     str = tags.nth_tag_name(f)
-                #     buffer.insert_at_cursor("{0}: ".format(str))
+                # buffer.insert_at_cursor("\nParameters: {0}\n".format(tags.to_string()))
+                self.set_parameter(buffer, tags.get_string,Gst.TAG_AUDIO_CODEC)
+                self.set_parameter(buffer, tags.get_uint,Gst.TAG_NOMINAL_BITRATE)
+                self.set_parameter(buffer, tags.get_uint,Gst.TAG_MINIMUM_BITRATE)
+                self.set_parameter(buffer, tags.get_uint,Gst.TAG_MAXIMUM_BITRATE )
+                self.set_parameter(buffer, tags.get_uint,Gst.TAG_BITRATE)
 
-                #     value = tags.get_value_index (tags.nth_tag_name(f),f)
-                #     buffer.insert_at_cursor("{0}\n".format(value or "unknown"))
-        for i in range(nr_text):
-            tags = None
-            # retrieve the stream's subtitle tags
-            tags = self.playbin.emit("get-text-tags", i)
-            if tags:
-                buffer.insert_at_cursor("\nSubtitle stream{0}\n".format(i))
-                buffer.insert_at_cursor("\nParameters: {0}\n".format(tags.to_string()))
+    def set_parameter(self, buffer, fn, tag):
+        ret, str = fn(tag)
+        if ret:
+            buffer.insert_at_cursor("{0} :".format(tag))
+            buffer.insert_at_cursor("{0}\n".format(str))
 
-    # this function is called when an "application" message is posted on the bus
-    # here we retrieve the message posted by the on_tags_changed callback
+    # Function called when an "application" message is posted on the bus
     def on_application_message(self, bus, msg):
         if msg.get_structure().get_name() == "tags-changed":
-            # if the message is the "tags-changed", update the stream info in
-            # the GUI
+            # if the message is the "tags-changed", update the GUI
             self.analyze_streams()
 
 
